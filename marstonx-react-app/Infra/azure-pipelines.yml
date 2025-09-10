@@ -1,0 +1,101 @@
+trigger:
+  branches:
+    include:
+      - dev
+
+variables:
+  location: 'uksouth'
+  buildDir: '$(Build.ArtifactStagingDirectory)/next'
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+
+- stage: Dev
+  displayName: 'Dev'
+ 
+  jobs:
+    - deployment: BuildAndDeployDev
+      displayName: 'Build and Deploy to Dev'
+      environment: Dev
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+              - checkout: self 
+              - task: NodeTool@0
+                inputs:
+                  versionSpec: '20.x'
+                displayName: 'Use Node.js 20'
+
+              - task: CmdLine@2
+                displayName: 'Install pnpm'
+                inputs:
+                  script: |
+                    npm install -g pnpm
+
+              - script: pnpm store prune
+                displayName: 'Clear pnpm cache'
+
+            
+              - task: CmdLine@2
+                displayName: 'Install dependencies'
+                inputs:
+                  script: |
+                    export PNPM_HOME="/home/vsts/.local/share/pnpm"
+                    export PATH="$PNPM_HOME:$PATH"
+                    pnpm install --no-frozen-lockfile
+                  workingDirectory: '$(Build.SourcesDirectory)'     
+              - task: CmdLine@2
+                displayName: 'Remove node modules'
+                inputs:
+                  script: |
+                    rm -rf node_modules
+
+              - task: ArchiveFiles@2
+                inputs:
+                  rootFolderOrFile: "."
+                  includeRootFolder: false
+                  archiveType: "zip"
+                  archiveFile: "$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip"
+                  replaceExistingArchive: true
+
+              - task: PublishBuildArtifacts@1
+                inputs:
+                  PathtoPublish: "$(Build.ArtifactStagingDirectory)"
+                  ArtifactName: "dropDev"
+                  publishLocation: "Container"
+
+              - task: DownloadBuildArtifacts@0
+                inputs:
+                  buildType: 'current'
+                  downloadType: 'specific'
+                  downloadPath: '$(Pipeline.Workspace)'
+                  artifactName: 'dropDev'
+
+            
+              - task: AzureCLI@2
+                displayName: 'Set App Settings (Dev)'
+                inputs:
+                  azureSubscription: $(Dev-Subscription)
+                  scriptType: 'bash'
+                  scriptLocation: 'inlineScript'
+                  inlineScript: |
+                    az webapp config appsettings set \
+                      --name $(Dev-AppServiceName) \
+                      --resource-group $(AppserviceUIResourcegroup) \
+                      --settings SCM_DO_BUILD_DURING_DEPLOYMENT=true \
+                                 ENABLE_ORYX_BUILD=true \
+                                 ORYX_PREFER_PNPM=true \
+                                 WEBSITE_NODE_DEFAULT_VERSION=20 \
+                                 PRE_BUILD_COMMAND="npm install -g pnpm" \
+                                 CUSTOM_BUILD_COMMAND="pnpm install"
+
+              - task: AzureWebApp@1
+                displayName: 'Deploy to Azure App Service (Dev)'
+                inputs:
+                  azureSubscription: $(Dev-Subscription)
+                  appType: 'webAppLinux'
+                  appName: '$(Dev-AppServiceName)'
+                  package: '$(Pipeline.Workspace)/dropDev/$(Build.BuildId).zip'
+ 
